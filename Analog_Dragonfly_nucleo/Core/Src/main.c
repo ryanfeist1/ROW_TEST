@@ -35,6 +35,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER 1024
+#define GEOPHONE_FFT_LENGTH 512
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,19 +56,36 @@ UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 
-uint16_t geophone_buffer[1024];
-float geophone_buffer_float[1024];
+uint16_t geophone_half_transfer[GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2];
+float geophone_half_transfer_float[GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2];
 uint32_t DMAConvCplt = 0;
 
 uint32_t ADC1_DMAConvHalfCplt = 0;
 uint32_t ADC1_DMAConvFullCplt = 0;
 
+float firstHalf_MaxResult = 0;
+uint32_t firstHalf_MaxIndex = 0;
+float firstHalf_meanResult = 0;
+float firstHalf_stdResult = 0;
+float firstHalf_rmsResult = 0;
+float firstHalf_powerResult = 0;
+
+// need to create array to store real and complex numbers
+float geophone_cfft[GEOPHONE_FFT_LENGTH*2];
+
+uint8_t ifftFlag = 0;
+uint8_t bitReverseFlag = 0;
+struct arm_cfft_instance_f32 fftLen = 512;
+
+float geophone_fft_output[GEOPHONE_FFT_LENGTH/2];
+
+uint32_t fftSize = GEOPHONE_FFT_LENGTH;
+uint32_t testIndex = 0;
+float maxValue = 0.0;
+
 char WELCOME_MSG[50] = "Welcome to Terminal Message from STM32\r\n";
 char msg[64];
 
-
-float firstHalf_MaxResult = 0;
-uint32_t firstHalf_MaxIndex = 0;
 
 /* USER CODE END PV */
 
@@ -125,7 +145,7 @@ int main(void)
 
   //HAL_ADC_Start_DMA(ADC_HandleTypeDef *hadc, uint32_t *pData, uint32_t Length);
 
-  HAL_ADC_Start_DMA(&hadc1, geophone_buffer, 1024);
+  HAL_ADC_Start_DMA(&hadc1, geophone_half_transfer, GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER);
 
 
   /* USER CODE END 2 */
@@ -145,10 +165,35 @@ int main(void)
 
 	  if (ADC1_DMAConvHalfCplt == 1){
 		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
-		  for (int i = 0; i < 512; i++){
-			  geophone_buffer_float[i] = (float)geophone_buffer[i];
+		  // expect each half buffer callback to hit every 330ms (3kHz fs, 1024 buffer length)
+		  // 512 conversions totaling 330ms are available to analyze
+		  for (int i = 0; i < GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2; i++){
+			  geophone_half_transfer_float[i] = (float)geophone_half_transfer[i];
 		  }
-		  arm_max_f32(geophone_buffer_float, 512, &firstHalf_MaxResult, &firstHalf_MaxIndex);
+		  //arm_q15_to_float();  //could use this function to convert integers to float.
+
+		  arm_mean_f32(geophone_half_transfer_float, GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2, &firstHalf_meanResult);
+		  arm_rms_f32(geophone_half_transfer_float, GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2, &firstHalf_rmsResult);
+		  arm_std_f32(geophone_half_transfer_float, GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2, &firstHalf_stdResult);
+		  arm_power_f32(geophone_half_transfer_float, GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2, &firstHalf_powerResult);
+
+		  // Create double length array, initiate with 0.0
+		  arm_fill_f32(0.0, &geophone_cfft, GEOPHONE_FFT_LENGTH*2);
+		  // Fill array with geophone data, every other position, to create complex pair
+		  for (int i = 0; i < GEOPHONE_FFT_LENGTH*2; i+=2){
+			  geophone_cfft[i] = geophone_half_transfer_float[i/2];
+		  }
+		  /* Process the data through the CFFT/CIFFT module */
+		  arm_cfft_f32(&arm_cfft_instance_f32, geophone_cfft, ifftFlag, doBitReverse);
+
+		  /* Process the data through the Complex Magnitude Module for calculating the magnitude at each bin */
+		  arm_cmplx_mag_f32(geophone_cfft, geophone_fft_output, fftSize);
+
+		  /* Calculates maxValue and returns corresponding BIN value */
+		  arm_max_f32(geophone_fft_output, fftSize, &maxValue, &testIndex);
+
+
+		  //arm_max_f32(geophone_half_transfer_float, 512, &firstHalf_MaxResult, &firstHalf_MaxIndex);
 		  ADC1_DMAConvHalfCplt = 0;
 		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);		//0.25ms to complete the casting to float and execute the max search
 	 	  }
