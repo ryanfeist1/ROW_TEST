@@ -63,6 +63,13 @@ uint32_t ADC1_DMAConvHalfCplt = 0;
 uint32_t ADC1_DMAConvFullCplt = 0;
 uint16_t geophone_half_transfer[GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2];
 float32_t geophone_half_transfer_f32[GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/2];
+float32_t geophone_rolling_fft_sum[GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/4];
+float32_t geophone_rolling_fft_avg[GEOPHONE_LENGTH_CMPLT_DMA_TRANSFER/4];
+uint32_t geophone_new_data = 0;
+uint32_t geophone_rolling_fft_sum_Ctr = 0;
+float32_t tempBuffer[GEOPHONE_FFT_LENGTH/2];
+float32_t geophone_rolling_average = 25.0;
+
 
 float32_t firstHalf_MaxResult = 0;
 uint32_t firstHalf_MaxIndex = 0;
@@ -193,15 +200,39 @@ int main(void)
 		  // Skip first bin as it represents DC offset of the signal
 		  arm_max_f32(&geophone_cfft_output_mag[1], (GEOPHONE_FFT_LENGTH/2), &maxValue, &maxIndex);
 
-
-		  //arm_max_f32(geophone_half_transfer_f32, 512, &firstHalf_MaxResult, &firstHalf_MaxIndex);
+		  // set the flag so the rolling average functions get ran with the new data
+		  geophone_new_data = 1;
 		  ADC1_DMAConvHalfCplt = 0;
-		  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);		//0.25ms to complete the casting to float and execute the max search
+
 	 	  }
 	 if (ADC1_DMAConvFullCplt == 1){
+		 // Repeat FFT code from first half buffer fill above
+
+
 		 ADC1_DMAConvFullCplt = 0;
-		 //HAL_UART_Transmit(&huart2, (uint8_t*)PlayBuf_L, (1024*4), HAL_MAX_DELAY);
 	 	}
+
+	 // Perform rolling average calculations here
+	 if (geophone_new_data == 1){
+		 // Add consecutive FFT outputs together
+		 arm_add_f32(geophone_cfft_output_mag, geophone_rolling_fft_sum, geophone_rolling_fft_sum, (GEOPHONE_FFT_LENGTH/2));
+		 geophone_rolling_fft_sum_Ctr += 1;
+		 // Get avg once enough FFTs are summed
+		 if (geophone_rolling_fft_sum_Ctr > geophone_rolling_average){
+			 // Perform average
+			 // Fill with value = (1/geophone_rolling_average)
+			 arm_fill_f32((1/geophone_rolling_average), tempBuffer, (GEOPHONE_FFT_LENGTH/2));
+			 // Multiply every element of the rolling_fft_sum buffer by (1/geophone_rolling_average) to get avg
+			 arm_mult_f32(geophone_rolling_fft_sum, tempBuffer, geophone_rolling_fft_avg, (GEOPHONE_FFT_LENGTH/2));
+			 geophone_rolling_fft_sum_Ctr = 0;
+			 // fill rolling_fft_sum buffer with zeros to reset
+			 arm_fill_f32(0.0, geophone_rolling_fft_sum, (GEOPHONE_FFT_LENGTH/2));
+		 }
+		 geophone_new_data = 0;
+		 HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+	 }
+
+
 
 
   }
